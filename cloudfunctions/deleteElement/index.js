@@ -1,15 +1,31 @@
 // 云函数入口文件
 const cloud = require('wx-server-sdk')
 
-cloud.init({ // 初始化云开发环境
-  env: cloud.DYNAMIC_CURRENT_ENV // 当前环境的常量
+cloud.init({
+  env: cloud.DYNAMIC_CURRENT_ENV
 })
 const db = cloud.database()
 
-// 云函数入口函数
+// 允许删除的集合白名单
+const ALLOWED_LISTS = ['MissionList', 'MarketList', 'StorageList']
+
 exports.main = async (context) => {
-  // 根据待办的 _id 找到并删除
-  db.collection(context.list).where({
-    _id: context._id
-  }).remove()
+  const { OPENID } = cloud.getWXContext()
+
+  // 安全校验：集合名必须在白名单内
+  if (!ALLOWED_LISTS.includes(context.list)) {
+    return { code: 403, msg: '非法集合操作' }
+  }
+
+  // 安全校验：只能删除自己创建的记录
+  const record = await db.collection(context.list).where({
+    _id: context._id,
+    _openid: OPENID
+  }).get()
+
+  if (record.data.length === 0) {
+    return { code: 403, msg: '无权删除此记录或记录不存在' }
+  }
+
+  return await db.collection(context.list).doc(context._id).remove()
 }

@@ -1,165 +1,186 @@
-Page({
-    data: {
-        search: "",
+const app = getApp()
 
-        allItems: [],
-        unusedItems: [],
-        usedItems: [],
-    
-        _openidA : getApp().globalData._openidA,
-        _openidB : getApp().globalData._openidB,
-    
-        slideButtons: [
-            {extClass: 'useBtn', text: '使用', src: "Images/icon_use.svg"},
-            {extClass: 'starBtn', text: '星标', src: "Images/icon_star.svg"},
-            {extClass: 'removeBtn', text: '删除', src: 'Images/icon_del.svg'}
-        ],
-    },
-    
-    //页面加载时运行
-    async onShow(){
-        await wx.cloud.callFunction({name: 'getOpenId'}).then(async res => {
-            await wx.cloud.callFunction({name: 'getElementByOpenId', data: {
-                list: getApp().globalData.collectionStorageList,
-                _openid: res.result
-            }}).then(async data => {
-                this.setData({allItems: data.result.data})
-                this.filterItem()
-            })
-        })
-    },
-  
-    //转到物品详情
-    async toDetailPage(element, isUpper) {
-      const itemIndex = element.currentTarget.dataset.index
-      const item = isUpper ? this.data.unusedItems[itemIndex] : this.data.usedItems[itemIndex]
-      wx.navigateTo({url: '../ItemDetail/index?id=' + item._id})
-    },
-    //转到物品详情[上]
-    async toDetailPageUpper(element) {
-      this.toDetailPage(element, true)
-    },  
-    //转到物品详情[下]
-    async toDetailPageLower(element) {
-      this.toDetailPage(element, false)
-    },
-  
-    //设置搜索
-    onSearch(element){
-      this.setData({
-        search: element.detail.value
+Page({
+  data: {
+    search: "",
+    allItems: [],
+    unusedItems: [],
+    usedItems: [],
+    isLoading: false,
+
+    slideButtons: [
+      {extClass: 'useBtn', text: '使用', src: "Images/icon_use.svg"},
+      {extClass: 'starBtn', text: '星标', src: "Images/icon_star.svg"},
+      {extClass: 'removeBtn', text: '删除', src: 'Images/icon_del.svg'}
+    ],
+  },
+
+  async onShow() {
+    await this.loadItems()
+  },
+
+  // 加载仓库物品
+  async loadItems() {
+    this.setData({ isLoading: true })
+    wx.showLoading({ title: '加载中...' })
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'getElementByOpenId',
+        data: { list: app.globalData.collectionStorageList }
       })
-  
+      this.setData({ allItems: res.result.data || [] })
       this.filterItem()
-    },
-  
-    //将物品划分为：完成，未完成
-    filterItem(){
-      let itemList = []
-      if(this.data.search != ""){
-        for(let i in this.data.allItems){
-          if(this.data.allItems[i].title.match(this.data.search) != null){
-            itemList.push(this.data.allItems[i])
+    } catch (err) {
+      console.error('加载仓库失败:', err)
+      wx.showToast({ title: '加载失败', icon: 'none' })
+    } finally {
+      this.setData({ isLoading: false })
+      wx.hideLoading()
+    }
+  },
+
+  // 下拉刷新
+  async onPullDownRefresh() {
+    await this.loadItems()
+    wx.stopPullDownRefresh()
+  },
+
+  // 转到物品详情
+  toDetailPage(element, isUpper) {
+    const itemIndex = element.currentTarget.dataset.index
+    const list = isUpper ? this.data.unusedItems : this.data.usedItems
+    const item = list[itemIndex]
+    if (!item) return
+    wx.navigateTo({ url: '../ItemDetail/index?id=' + item._id })
+  },
+
+  toDetailPageUpper(element) { this.toDetailPage(element, true) },
+  toDetailPageLower(element) { this.toDetailPage(element, false) },
+
+  // 搜索（加防抖）
+  onSearch(element) {
+    clear(this.searchTimer)
+    this.searchTimer = setTimeout(() => {
+      this.setData({ search: element.detail.value })
+      this.filterItem()
+    }, 300)
+  },
+
+  // 过滤物品
+  filterItem() {
+    let itemList = []
+    if (this.data.search !== "") {
+      const keyword = this.data.search.toLowerCase()
+      itemList = this.data.allItems.filter(item =>
+        item.title && item.title.toLowerCase().includes(keyword)
+      )
+    } else {
+      itemList = this.data.allItems
+    }
+
+    this.setData({
+      unusedItems: itemList.filter(item => item.available === true),
+      usedItems: itemList.filter(item => item.available === false),
+    })
+  },
+
+  // 左滑按钮
+  slideButtonTapUpper(element) { this.slideButtonTap(element, true) },
+  slideButtonTapLower(element) { this.slideButtonTap(element, false) },
+
+  async slideButtonTap(element, isUpper) {
+    const { index } = element.detail
+    const itemIndex = element.currentTarget.dataset.index
+    const list = isUpper === true ? this.data.unusedItems : this.data.usedItems
+    const item = list[itemIndex]
+    if (!item) return
+
+    const currentOpenId = app.globalData.currentOpenId
+
+    // 使用物品
+    if (index === 0) {
+      if (isUpper) {
+        await this.useItem(item)
+      } else {
+        wx.showToast({ title: '物品已被使用', icon: 'none' })
+      }
+      return
+    }
+
+    // 星标 / 删除：只能操作自己的
+    if (item._openid !== currentOpenId) {
+      wx.showToast({ title: '只能编辑自己的物品', icon: 'none' })
+      return
+    }
+
+    if (index === 1) {
+      // 星标
+      try {
+        await wx.cloud.callFunction({
+          name: 'editStar',
+          data: { _id: item._id, list: app.globalData.collectionStorageList, value: !item.star }
+        })
+        item.star = !item.star
+        this.setData({
+          unusedItems: this.data.unusedItems,
+          usedItems: this.data.usedItems
+        })
+      } catch (err) {
+        wx.showToast({ title: '操作失败', icon: 'none' })
+      }
+    } else if (index === 2) {
+      // 删除（加确认弹窗）
+      wx.showModal({
+        title: '确认删除',
+        content: `确定要删除「${item.title}」吗？`,
+        confirmText: '删除',
+        confirmColor: '#e64340',
+        success: async (res) => {
+          if (res.confirm) {
+            try {
+              await wx.cloud.callFunction({
+                name: 'deleteElement',
+                data: { _id: item._id, list: app.globalData.collectionStorageList }
+              })
+              list.splice(itemIndex, 1)
+              this.setData({
+                unusedItems: this.data.unusedItems,
+                usedItems: this.data.usedItems
+              })
+              wx.showToast({ title: '已删除', icon: 'success' })
+            } catch (err) {
+              wx.showToast({ title: '删除失败', icon: 'none' })
+            }
           }
         }
-      }else{
-        itemList = this.data.allItems
+      })
+    }
+  },
+
+  // 使用物品
+  async useItem(item) {
+    wx.showModal({
+      title: '确认使用',
+      content: `确定要使用「${item.title}」吗？使用后不可逆哦`,
+      confirmText: '使用',
+      success: async (res) => {
+        if (!res.confirm) return
+
+        try {
+          wx.showLoading({ title: '提交中...' })
+          await wx.cloud.callFunction({
+            name: 'editAvailable',
+            data: { _id: item._id, value: false, list: app.globalData.collectionStorageList }
+          })
+          wx.hideLoading()
+          item.available = false
+          this.filterItem()
+          wx.showToast({ title: '已使用', icon: 'success' })
+        } catch (err) {
+          wx.hideLoading()
+          wx.showToast({ title: '操作失败', icon: 'none' })
+        }
       }
-  
-      this.setData({
-        unusedItems: itemList.filter(item => item.available === true),
-        usedItems: itemList.filter(item => item.available === false),
-      })
-    },
-  
-    //响应左划按钮事件[上]
-    async slideButtonTapUpper(element) {
-      this.slideButtonTap(element, true)
-    },
-  
-    //响应左划按钮事件[下]
-    async slideButtonTapLower(element) {
-      this.slideButtonTap(element, false)
-    },
-  
-    //响应左划按钮事件逻辑
-    async slideButtonTap(element, isUpper){
-      //得到UI序号
-      const {index} = element.detail
-  
-      //根据序号获得物品
-      const itemIndex = element.currentTarget.dataset.index
-      const item = isUpper === true ? this.data.unusedItems[itemIndex] : this.data.usedItems[itemIndex]
-  
-      await wx.cloud.callFunction({name: 'getOpenId'}).then(async openid => {
-          //处理完成点击事件
-          if (index === 0) {
-              if(isUpper) {
-                  this.useItem(element)
-              }else{
-                  wx.showToast({
-                      title: '物品已被使用',
-                      icon: 'error',
-                      duration: 2000
-                  })
-              }
-              
-          }else if(item._openid === openid.result){
-              //处理星标按钮点击事件
-              if (index === 1) {
-                  wx.cloud.callFunction({name: 'editStar', data: {_id: item._id, list: getApp().globalData.collectionStorageList, value: !item.star}})
-                  //更新本地数据
-                  item.star = !item.star
-              }
-              
-              //处理删除按钮点击事件
-              else if (index === 2) {
-                  wx.cloud.callFunction({name: 'deleteElement', data: {_id: item._id, list: getApp().globalData.collectionStorageList}})
-                  //更新本地数据
-                  if(isUpper) this.data.unusedItems.splice(itemIndex, 1) 
-                  else  this.data.usedItems.splice(itemIndex, 1) 
-                  //如果删除完所有事项，刷新数据，让页面显示无事项图片
-                  if (this.data.unusedItems.length === 0 && this.data.usedItems.length === 0) {
-                      this.setData({
-                      allItems: [],
-                      unusedItems: [],
-                      usedItems: []
-                      })
-                  }
-              }
-  
-              //触发显示更新
-              this.setData({usedItems: this.data.usedItems, unusedItems: this.data.unusedItems})
-  
-          //如果编辑的不是自己的物品，显示提醒
-          }else{
-              wx.showToast({
-              title: '只能编辑自己的物品',
-              icon: 'error',
-              duration: 2000
-              })
-          }
-      })
-    },
-  
-    //购买物品
-    async useItem(element) {
-        //根据序号获得物品
-        const itemIndex = element.currentTarget.dataset.index
-        const item = this.data.unusedItems[itemIndex]
-    
-        //使用物品
-        wx.cloud.callFunction({name: 'editAvailable', data: {_id: item._id, value: false, list: getApp().globalData.collectionStorageList}}).then(()=>{
-            //显示提示
-            wx.showToast({
-                title: '已使用',
-                icon: 'success',
-                duration: 2000
-            })
-  
-            //触发显示更新
-            item.available = false
-            this.filterItem()
-        })
-    },
-  })
+    })
+  },
+})

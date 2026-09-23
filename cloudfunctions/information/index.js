@@ -1,52 +1,67 @@
-// 云函数入口文件
+// 云函数入口文件：消息推送
 const cloud = require('wx-server-sdk')
-cloud.init()
+cloud.init({
+  env: cloud.DYNAMIC_CURRENT_ENV
+})
+const db = cloud.database()
 
 exports.main = async (event, context) => {
   try {
-    console.log("Sending message with event data:", event);
+    const { OPENID } = cloud.getWXContext()
+    console.log('发送通知，当前用户:', OPENID)
 
-    let openid = cloud.getWXContext().OPENID;  // 获取用户的openid
-    console.log(openid);
-    if (openid === '这里改成A的openid') {//_openidA放到单引号里
-        openid = '这里改成B的openid';//_openidB放到单引号
-    } else {
-        openid = '这里改成A的openid';//_openidA放到单引号里
+    // 从 UserList 读取两个用户的 openid（不再硬编码）
+    const userRes = await db.collection('UserList').get()
+    const userList = userRes.data
+    if (userList.length < 2) {
+      console.error('UserList 中用户数量不足')
+      return { code: 500, msg: '用户配置不完整' }
     }
 
+    // 确定通知接收人：如果是 A 操作就通知 B，反之亦然
+    let targetOpenId
+    if (OPENID === userList[0]._openid) {
+      targetOpenId = userList[1]._openid
+    } else if (OPENID === userList[1]._openid) {
+      targetOpenId = userList[0]._openid
+    } else {
+      console.error('未知用户:', OPENID)
+      return { code: 403, msg: '无权发送通知' }
+    }
 
-
+    // 获取最新任务标题
     let taskName = '叮咚～任务更新提醒'
-    // 获取发布任务最后一条信息进行推送
-    await cloud.callFunction({ name: 'getList', data: { list: 'MissionList' } }).then(res => {
-        const { data } = res.result
-        const task = data.filter(task => task._openid == openid)
-        if (task.length) {
-            taskName = task[task.length - 1].title
-        }
-    })
+    try {
+      const missionRes = await db.collection('MissionList')
+        .orderBy('date', 'desc')
+        .limit(1)
+        .get()
+      if (missionRes.data.length > 0) {
+        taskName = missionRes.data[0].title
+      }
+    } catch (err) {
+      console.error('获取任务标题失败:', err)
+    }
 
     const result = await cloud.openapi.subscribeMessage.send({
-      touser: openid, // 发送通知给谁的openid(把上面挑好就行，这块不用动)
+      touser: targetOpenId,
       data: {
         thing6: {
           value: taskName
         },
         thing9: {
-          value: '你的宝r在努力学习哦'
+          value: '你的宝r更新了任务哦'
         }
       },
-      
-      templateId: event.templateId, // 模板ID
-      miniprogramState: 'developer',
-      page: 'pages/MainPage/index' // 这个是发送完服务通知用户点击消息后跳转的页面
+      templateId: event.templateId,
+      miniprogramState: 'formal', // 上线用 formal，开发调试用 developer
+      page: 'pages/MainPage/index'
     })
-    console.log("Sending message with event data:", event);
 
-    console.log("Message sent successfully:", result);
-    return event.startdate
+    console.log('消息发送成功:', result)
+    return { code: 200, msg: '发送成功' }
   } catch (err) {
-    console.log("Error while sending message:", err);
-    return err
+    console.error('消息发送失败:', err)
+    return { code: 500, msg: err.message || '发送失败' }
   }
 }

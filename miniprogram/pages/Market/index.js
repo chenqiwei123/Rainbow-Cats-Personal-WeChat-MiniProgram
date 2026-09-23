@@ -1,18 +1,14 @@
+const app = getApp()
+
 Page({
   data: {
-    screenWidth: 1000,
-    screenHeight: 1000,
-
     search: "",
     credit: 0,
     user: "",
-
-    allItems: [], //所有商品
-    unboughtItems: [], //上架商品
-    boughtItems: [], //下架商品
-
-    _openidA : getApp().globalData._openidA,
-    _openidB : getApp().globalData._openidB,
+    allItems: [],
+    unboughtItems: [],
+    boughtItems: [],
+    isLoading: false,
 
     slideButtons: [
       {extClass: 'buyBtn', text: '购买', src: "Images/icon_buy.svg"},
@@ -21,94 +17,81 @@ Page({
     ],
   },
 
-  //页面加载时运行
-  async onShow(){
-    this.getCurrentCredit()
-    this.getUser()
-    await wx.cloud.callFunction({name: 'getList', data: {list: getApp().globalData.collectionMarketList}}).then(data => {
-      this.setData({allItems: data.result.data})
-      this.filterItem()
-      this.getScreenSize()
-    })
+  async onShow() {
+    await Promise.all([this.loadItems(), this.loadCredit()])
+    this.setData({ user: app.getCurrentUserName() })
   },
 
-  async getUser(){
-    await wx.cloud.callFunction({name: 'getOpenId'}).then(res => {
-        if(res.result === getApp().globalData._openidA){
-            this.setData({
-                user: getApp().globalData.userA,
-            })
-        }else if(res.result === getApp().globalData._openidB){
-            this.setData({
-                user: getApp().globalData.userB,
-            })
-        }
-    })
-  },
-
-  //获取当前账号积分数额
-  async getCurrentCredit(){
-    await wx.cloud.callFunction({name: 'getOpenId'})
-    .then(async openid => {
-      await wx.cloud.callFunction({name: 'getElementByOpenId', data: {list: getApp().globalData.collectionUserList, _openid: openid.result}})
-      .then(async res => {
-        this.setData({
-          credit: res.result.data[0].credit
-        }) 
+  // 加载商品列表
+  async loadItems() {
+    this.setData({ isLoading: true })
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'getList',
+        data: { list: app.globalData.collectionMarketList }
       })
-    })
+      this.setData({ allItems: res.result.data })
+      this.filterItem()
+    } catch (err) {
+      console.error('加载商品失败:', err)
+      wx.showToast({ title: '加载失败', icon: 'none' })
+    } finally {
+      this.setData({ isLoading: false })
+    }
   },
 
-  //获取页面大小
-  async getScreenSize(){
-    wx.getSystemInfo({
-      success: (res) => {
-        this.setData({
-          screenWidth: res.windowWidth,
-          screenHeight: res.windowHeight
-        })
+  // 加载当前用户积分
+  async loadCredit() {
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'getElementByOpenId',
+        data: { list: app.globalData.collectionUserList }
+      })
+      if (res.result.data && res.result.data[0]) {
+        this.setData({ credit: res.result.data[0].credit })
       }
-    })
+    } catch (err) {
+      console.error('加载积分失败:', err)
+    }
   },
 
-  //转到商品详情
-  async toDetailPage(element, isUpper) {
+  // 下拉刷新
+  async onPullDownRefresh() {
+    await Promise.all([this.loadItems(), this.loadCredit()])
+    wx.stopPullDownRefresh()
+  },
+
+  // 转到商品详情
+  toDetailPage(element, isUpper) {
     const itemIndex = element.currentTarget.dataset.index
-    const item = isUpper ? this.data.unboughtItems[itemIndex] : this.data.boughtItems[itemIndex]
-    wx.navigateTo({url: '../MarketDetail/index?id=' + item._id})
-  },
-  //转到商品详情[上]
-  async toDetailPageUpper(element) {
-    this.toDetailPage(element, true)
-  },  
-  //转到商品详情[下]
-  async toDetailPageLower(element) {
-    this.toDetailPage(element, false)
-  },
-  //转到添加商品
-  async toAddPage() {
-    wx.navigateTo({url: '../MarketAdd/index'})
+    const list = isUpper ? this.data.unboughtItems : this.data.boughtItems
+    const item = list[itemIndex]
+    if (!item) return
+    wx.navigateTo({ url: '../MarketDetail/index?id=' + item._id })
   },
 
-  //设置搜索
-  onSearch(element){
-    this.setData({
-      search: element.detail.value
-    })
+  toDetailPageUpper(element) { this.toDetailPage(element, true) },
+  toDetailPageLower(element) { this.toDetailPage(element, false) },
+  toAddPage() { wx.navigateTo({ url: '../MarketAdd/index' }) },
 
-    this.filterItem()
+  // 搜索（加防抖）
+  onSearch(element) {
+    clear(this.searchTimer)
+    this.searchTimer = setTimeout(() => {
+      this.setData({ search: element.detail.value })
+      this.filterItem()
+    }, 300)
   },
 
-  //将商品划分为：完成，未完成
-  filterItem(){
+  // 过滤商品
+  filterItem() {
     let itemList = []
-    if(this.data.search != ""){
-      for(let i in this.data.allItems){
-        if(this.data.allItems[i].title.match(this.data.search) != null){
-          itemList.push(this.data.allItems[i])
-        }
-      }
-    }else{
+    if (this.data.search !== "") {
+      const keyword = this.data.search.toLowerCase()
+      itemList = this.data.allItems.filter(item =>
+        item.title && item.title.toLowerCase().includes(keyword)
+      )
+    } else {
       itemList = this.data.allItems
     }
 
@@ -118,122 +101,136 @@ Page({
     })
   },
 
-  //响应左划按钮事件[上]
-  async slideButtonTapUpper(element) {
-    this.slideButtonTap(element, true)
-  },
+  // 左滑按钮
+  slideButtonTapUpper(element) { this.slideButtonTap(element, true) },
+  slideButtonTapLower(element) { this.slideButtonTap(element, false) },
 
-  //响应左划按钮事件[下]
-  async slideButtonTapLower(element) {
-    this.slideButtonTap(element, false)
-  },
-
-  //响应左划按钮事件逻辑
-  async slideButtonTap(element, isUpper){
-    //得到UI序号
-    const {index} = element.detail
-
-    //根据序号获得商品
+  async slideButtonTap(element, isUpper) {
+    const { index } = element.detail
     const itemIndex = element.currentTarget.dataset.index
-    const item = isUpper === true ? this.data.unboughtItems[itemIndex] : this.data.boughtItems[itemIndex]
+    const list = isUpper === true ? this.data.unboughtItems : this.data.boughtItems
+    const item = list[itemIndex]
+    if (!item) return
 
-    await wx.cloud.callFunction({name: 'getOpenId'}).then(async openid => {
-        //处理完成点击事件
-        if (index === 0) {
-            if(isUpper) {
-                this.buyItem(element)
-            }else{
-                wx.showToast({
-                    title: '物品已被购买',
-                    icon: 'error',
-                    duration: 2000
-                })
-            }
-            
-        }else if(item._openid === openid.result){
-            //处理星标按钮点击事件
-            if (index === 1) {
-                wx.cloud.callFunction({name: 'editStar', data: {_id: item._id, list: getApp().globalData.collectionMarketList, value: !item.star}})
-                //更新本地数据
-                item.star = !item.star
-            }
-            
-            //处理删除按钮点击事件
-            else if (index === 2) {
-                wx.cloud.callFunction({name: 'deleteElement', data: {_id: item._id, list: getApp().globalData.collectionMarketList}})
-                //更新本地数据
-                if(isUpper) this.data.unboughtItems.splice(itemIndex, 1) 
-                else  this.data.boughtItems.splice(itemIndex, 1) 
-                //如果删除完所有事项，刷新数据，让页面显示无事项图片
-                if (this.data.unboughtItems.length === 0 && this.data.boughtItems.length === 0) {
-                    this.setData({
-                    allItems: [],
-                    unboughtItems: [],
-                    boughtItems: []
-                    })
-                }
-            }
+    const currentOpenId = app.globalData.currentOpenId
 
-            //触发显示更新
-            this.setData({boughtItems: this.data.boughtItems, unboughtItems: this.data.unboughtItems})
+    // 购买
+    if (index === 0) {
+      if (isUpper) {
+        await this.buyItem(item)
+      } else {
+        wx.showToast({ title: '物品已被购买', icon: 'none' })
+      }
+      return
+    }
 
-        //如果编辑的不是自己的商品，显示提醒
-        }else{
-            wx.showToast({
-            title: '只能编辑自己的商品',
-            icon: 'error',
-            duration: 2000
-            })
-        }
-    })
-  },
+    // 星标 / 删除：只能操作自己创建的
+    if (item._openid !== currentOpenId) {
+      wx.showToast({ title: '只能编辑自己的商品', icon: 'none' })
+      return
+    }
 
-  //购买商品
-  async buyItem(element) {
-    //根据序号获得商品
-    const itemIndex = element.currentTarget.dataset.index
-    const item = this.data.unboughtItems[itemIndex]
-
-    await wx.cloud.callFunction({name: 'getOpenId'}).then(async openid => {
-      //如果购买自己的物品，显示提醒
-      if(item._openid === openid.result){
-        wx.showToast({
-          title: '不能购买自己的物品',
-          icon: 'error',
-          duration: 2000
+    if (index === 1) {
+      // 星标
+      try {
+        await wx.cloud.callFunction({
+          name: 'editStar',
+          data: { _id: item._id, list: app.globalData.collectionMarketList, value: !item.star }
         })
-      //如果没有积分，显示提醒
-      }else if(this.data.credit < item.credit){
-        wx.showToast({
-          title: '积分不足...',
-          icon: 'error',
-          duration: 2000
-        })
-      }else{
-        //购买对方物品，奖金从自己账号扣除，并添加物品到自己的库里
-        wx.cloud.callFunction({name: 'editAvailable', data: {_id: item._id, value: false, list: getApp().globalData.collectionMarketList}})
-        wx.cloud.callFunction({name: 'editCredit', data: {_openid: openid.result, value: -item.credit, list: getApp().globalData.collectionUserList}})
-        wx.cloud.callFunction({name: 'addElement', data: {
-            list: getApp().globalData.collectionStorageList,
-            credit: item.credit,
-            title: item.title,
-            desc: item.desc,
-        }})
-        
-        //显示提示
-        wx.showToast({
-            title: '购买成功',
-            icon: 'success',
-            duration: 2000
-        })
-
-        //触发显示更新
+        item.star = !item.star
         this.setData({
-          credit: this.data.credit - item.credit
+          unboughtItems: this.data.unboughtItems,
+          boughtItems: this.data.boughtItems
         })
+      } catch (err) {
+        wx.showToast({ title: '操作失败', icon: 'none' })
+      }
+    } else if (index === 2) {
+      // 删除（加确认弹窗）
+      wx.showModal({
+        title: '确认删除',
+        content: `确定要删除「${item.title}」吗？`,
+        confirmText: '删除',
+        confirmColor: '#e64340',
+        success: async (res) => {
+          if (res.confirm) {
+            try {
+              await wx.cloud.callFunction({
+                name: 'deleteElement',
+                data: { _id: item._id, list: app.globalData.collectionMarketList }
+              })
+              list.splice(itemIndex, 1)
+              this.setData({
+                unboughtItems: this.data.unboughtItems,
+                boughtItems: this.data.boughtItems
+              })
+              wx.showToast({ title: '已删除', icon: 'success' })
+            } catch (err) {
+              wx.showToast({ title: '删除失败', icon: 'none' })
+            }
+          }
+        }
+      })
+    }
+  },
 
-        item.available = false
-        this.filterItem()
+  // 购买商品
+  async buyItem(item) {
+    const currentOpenId = app.globalData.currentOpenId
+
+    // 不能购买自己的物品
+    if (item._openid === currentOpenId) {
+      wx.showToast({ title: '不能购买自己的物品', icon: 'none' })
+      return
+    }
+
+    // 积分不足
+    if (this.data.credit < item.credit) {
+      wx.showToast({ title: '积分不足...', icon: 'none' })
+      return
+    }
+
+    // 确认购买弹窗
+    wx.showModal({
+      title: '确认购买',
+      content: `确定花费 ${item.credit} 积分购买「${item.title}」吗？`,
+      confirmText: '购买',
+      success: async (res) => {
+        if (!res.confirm) return
+
+        try {
+          wx.showLoading({ title: '购买中...' })
+          // 1. 标记商品为已购买
+          await wx.cloud.callFunction({
+            name: 'editAvailable',
+            data: { _id: item._id, value: false, list: app.globalData.collectionMarketList }
+          })
+          // 2. 扣减自己的积分
+          await wx.cloud.callFunction({
+            name: 'editCredit',
+            data: { _openid: currentOpenId, value: -item.credit, list: app.globalData.collectionUserList }
+          })
+          // 3. 加入自己的仓库
+          await wx.cloud.callFunction({
+            name: 'addElement',
+            data: {
+              list: app.globalData.collectionStorageList,
+              credit: item.credit,
+              title: item.title,
+              desc: item.desc,
+            }
+          })
+
+          wx.hideLoading()
+          this.setData({ credit: this.data.credit - item.credit })
+          item.available = false
+          this.filterItem()
+          wx.showToast({ title: '购买成功', icon: 'success' })
+        } catch (err) {
+          wx.hideLoading()
+          console.error('购买失败:', err)
+          wx.showToast({ title: '购买失败，请重试', icon: 'none' })
+        }
       }
     })
   },

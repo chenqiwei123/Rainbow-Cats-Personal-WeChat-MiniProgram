@@ -1,19 +1,38 @@
 // 云函数入口文件
 const cloud = require('wx-server-sdk')
 
-cloud.init({ // 初始化云开发环境
-  env: cloud.DYNAMIC_CURRENT_ENV // 当前环境的常量
+cloud.init({
+  env: cloud.DYNAMIC_CURRENT_ENV
 })
 const db = cloud.database()
 
-// 云函数入口函数
+// 允许操作的集合白名单
+const ALLOWED_LISTS = ['UserList']
+
 exports.main = async (context) => {
-  //更改积分数量，减少可用负数
+  const { OPENID } = cloud.getWXContext()
+
+  // 安全校验：集合名必须在白名单内
+  if (!ALLOWED_LISTS.includes(context.list)) {
+    return { code: 403, msg: '非法集合操作' }
+  }
+
+  // 安全校验：只能修改自己的积分
+  if (context._openid !== OPENID) {
+    return { code: 403, msg: '无权修改他人积分' }
+  }
+
+  // 安全校验：积分变动范围限制
+  const value = Number(context.value)
+  if (isNaN(value) || Math.abs(value) > 10000) {
+    return { code: 400, msg: '积分变动不合法' }
+  }
+
   return await db.collection(context.list).where({
-    _openid: context._openid
+    _openid: OPENID
   }).update({
     data: {
-      credit: db.command.inc(context.value)
+      credit: db.command.inc(value)
     }
   })
 }
